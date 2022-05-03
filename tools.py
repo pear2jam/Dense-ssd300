@@ -95,6 +95,31 @@ def matching(target, boxes_pred):
     return match_table
 
 
+def simple_supression_predict(boxes, classes_pred):
+    print(boxes.shape)
+    res_boxes = []
+    scores = []
+    labels = []
+    classes = ['background', 'apple', 'orange', 'banana']
+    boxes_score = torch.argsort(-torch.max(torch.softmax(classes_pred, axis=1), axis=1)[0])
+    a = 0.1
+    for i in boxes_score:
+        if torch.argmax(classes_pred[i]).detach().numpy() == 0:
+            continue
+        if torch.softmax(classes_pred[i], axis=0).max() < 0.1:
+            continue
+        add = True
+        for box in res_boxes:
+            if IoU(box, boxes[i]) > a:
+                add = False
+                break
+        if add:
+            res_boxes.append(boxes[i])
+            scores.append(torch.max(torch.softmax(classes_pred, axis=1), axis=1)[0][i].detach().numpy())
+            labels.append(classes[torch.argmax(classes_pred[i]).detach().numpy()])
+    return (np.stack(res_boxes), scores, labels)
+
+
 def move_to(data, device):
     if isinstance(data, (list, tuple)):
         return [move_to(x, device) for x in data]

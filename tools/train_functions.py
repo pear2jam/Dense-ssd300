@@ -1,18 +1,7 @@
-import numpy as np
 import torch
+import numpy as np
 
-
-def IoU(a, b):
-    interception_x = min(a[2], b[2]) - max(a[0], b[0])
-    interception_y = min(a[3], b[3]) - max(a[1], b[1])
-
-    interception_x = max(0, interception_x)
-    interception_y = max(0, interception_y)
-
-    interception = interception_x * interception_y
-
-    union = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - interception
-    return interception / union
+from tools.misc import IoU
 
 
 def make_default_boxes():
@@ -75,52 +64,25 @@ def make_default_boxes():
 
 
 def matching(target, boxes_pred):
-    min_overlap = 0.55
+    min_overlap = 0.5
     boxes = target[1]["boxes"]
-    match_table = torch.IntTensor(len(boxes_pred), 2) #assign each box their matched GT and label
+    match_table = torch.IntTensor(len(boxes_pred), 2)  # assign each box their matched GT and label
 
     for prior in range(len(boxes_pred)):
-        res_matching = np.zeros(len(boxes)) # IoUs vector of prior box with GT boxes
+        res_matching = np.zeros(len(boxes))  # IoUs vector of prior box with GT boxes
 
         for box in range(len(boxes)):
             res_matching[box] = IoU(boxes_pred[prior], target[1]["boxes"][box])
 
-        box_target = target[1]["labels"][np.argmax(res_matching)]
-        if max(res_matching) < min_overlap:
-            box_target = 0  # is bgd
+        if len(boxes) > 0:
+            box_target = target[1]["labels"][np.argmax(res_matching)]
+            if max(res_matching) < min_overlap:
+                box_target = 0  # is bgd
 
-        match_table[prior][0] = np.argmax(res_matching)
-        match_table[prior][1] = box_target
+            match_table[prior][0] = np.argmax(res_matching)
+            match_table[prior][1] = box_target
 
+        else:
+            match_table[prior][0] = 0
+            match_table[prior][1] = 0
     return match_table
-
-
-def simple_supression_predict(boxes, classes_pred):
-    print(boxes.shape)
-    res_boxes = []
-    scores = []
-    labels = []
-    classes = ['background', 'apple', 'orange', 'banana']
-    boxes_score = torch.argsort(-torch.max(torch.softmax(classes_pred, axis=1), axis=1)[0])
-    a = 0.1
-    for i in boxes_score:
-        if torch.argmax(classes_pred[i]).detach().numpy() == 0:
-            continue
-        if torch.softmax(classes_pred[i], axis=0).max() < 0.1:
-            continue
-        add = True
-        for box in res_boxes:
-            if IoU(box, boxes[i]) > a:
-                add = False
-                break
-        if add:
-            res_boxes.append(boxes[i])
-            scores.append(torch.max(torch.softmax(classes_pred, axis=1), axis=1)[0][i].detach().numpy())
-            labels.append(classes[torch.argmax(classes_pred[i]).detach().numpy()])
-    return (np.stack(res_boxes), scores, labels)
-
-
-def move_to(data, device):
-    if isinstance(data, (list, tuple)):
-        return [move_to(x, device) for x in data]
-    return data.to(device, non_blocking=True)

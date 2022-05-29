@@ -1,80 +1,134 @@
-from tools import *
 from network import *
+from tools import *
+from dataset import MyDataset
 from losses import *
-from dataset import FruitsDataset
+from dataset import MyDataset
+from augmentation import *
 
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-train_part = 0.01
-batch_size = 1
+# Data
+train_aug = 1
+test_aug = 1
+test = True
+
+# Training
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 epochs = 1
+batch_size = 1
+lr = 3e-4
 
-classes = ['background', 'apple', 'orange', 'banana']
+# Model
+dropout_rate = 0
 
 
+classes = ['background', 'Car']
+
+train_data = []
+test_data = []
+
+train_dataset = MyDataset()
+if test:
+    test_dataset = MyDataset(test=True)
+
+for i in range(len(train_data)):
+    train_data.append(train_data[i])
+
+if test:
+    for i in range(len(test_data)):
+        test_data.append(test_data[i])
+
+train_data_len = len(train_data)
+test_data_len = len(test_data)
+
+print("Before Augmentation:")
+print(f'Train: {train_data_len}, Test:{test_data_len}')
+
+# Augmentation
+
+for i in range(train_aug):
+    train_data.append(random_transform_image(train_data[:train_data_len]))
+
+if test:
+    for i in range(test_aug):
+        test_data.append(random_transform_image(test_data_len[:test_data_len]))
+
+print("After Augmentation:")
+print(f'Train: {len(train_data)}, Test:{len(test_data)}')
+
+#  Calculating tables
 default = make_default_boxes()
 
-tables = torch.zeros([int(train_part * 240), 8732, 2], dtype=torch.int32)
-for i in range(int(train_part*240)):
-    ex = FruitsDataset()[i]
-    tables[i] = matching(ex, default)
-    print(i)
+train_tables = torch.zeros([len(train_data), 8732, 2], dtype=torch.int32)
+if test:
+    test_tables = torch.zeros([len(test_data), 8732, 2], dtype=torch.int32)
 
-exs = [FruitsDataset()[i] for i in range(int(train_part * 240))]
+print('Train:', end='')
+for i in range(len(train_data)):
+    ex = train_data[i]
+    train_tables[i] = matching(ex, default)
+    if i % 20 == 0:
+        print()
+    print(i, end=' ')
 
-vgg = VGG()
-al = Auxiliairy_layers()
-boxes_det = Detection_boxes()
-classes_det = Classes_regression(4)
+print()
+if test:
+    print('Test:', end='')
+    for i in range(len(test_data)):
+        ex = test_data[i]
+        test_tables[i] = matching(ex, default)
+        if i % 20 == 0:
+            print()
+        print(i, end=' ')
 
-vgg_opt = torch.optim.Adam(vgg.parameters(), lr=0.5e-4)
-al_opt = torch.optim.Adam(al.parameters(), lr=0.2e-4)
-boxes_opt = torch.optim.Adam(boxes_det.parameters(), lr=0.2e-4)
-classes_opt = torch.optim.Adam(classes_det.parameters(), lr=0.2e-4)
 
-vgg = move_to(vgg, device)
-al = move_to(al, device)
-boxes_det = move_to(boxes_det, device)
-classes_det = move_to(classes_det, device)
+ssd300 = SSD300(len(train_dataset.classes), dropout_rate)
+ssd_opt = torch.optim.Adam(ssd300.parameters(), lr=lr)
 
-default = move_to(default, device)
+ssd300 = move_to(ssd300, device)
 
-for i in range(epochs):
+for epoch in range(epochs):
+    ssd300.train()
+    train_loss = 0
     start_batch = 0
-    while start_batch + batch_size < (int(train_part * 240)):
+    while start_batch + batch_size <= (len(train_data)):
         loss = 0
         for j in range(start_batch, start_batch + batch_size):
-            ex = exs[j]
+            ex = train_data[j]
             img = ex[0]
-            conv7_res, conv4_3_res = vgg(move_to(img.view(1, 3, 300, 300), device))
-            conv8_2_res, conv9_2_res, conv10_2_res, conv11_2_res = al(conv7_res)
-
-            boxes_pred = move_to(
-                boxes_det(conv4_3_res, conv7_res, conv8_2_res, conv9_2_res, conv10_2_res, conv11_2_res), device)
-            classes_pred = move_to(
-                classes_det(conv4_3_res, conv7_res, conv8_2_res, conv9_2_res, conv10_2_res, conv11_2_res), device)
-
-            boxes = move_to(boxes_pred[0] / 500 + default, device)
-            loss += ssd_loss(tables[j], ex, boxes, classes_pred[0], 3)
+            boxes_pred, classes_pred = ssd300(move_to(img.view(1, 3, 300, 300), device))
+            boxes = move_to(boxes_pred[0] + default, device)
+            loss += ssd_loss(train_tables[j], ex, boxes, classes_pred[0])
         loss /= batch_size
 
-        vgg_opt.zero_grad()
-        al_opt.zero_grad()
-        boxes_opt.zero_grad()
-        classes_opt.zero_grad()
+        ssd_opt.zero_grad()
 
         loss.backward()
 
-        vgg_opt.step()
-        al_opt.step()
-        boxes_opt.step()
-        classes_opt.step()
+        ssd_opt.step()
+
+        train_loss += loss.detach().cpu().numpy()
+        del loss, boxes_pred, classes_pred
+        torch.cuda.empty_cache()
 
         start_batch += batch_size
-    print(loss)
+    ssd300.eval()
 
+    if test:
+        test_loss = 0
+        for j in range(test_data_len):
+            test_loss = 0
+            ex = test_data[j]
+            img = ex[0]
+            boxes_pred, classes_pred = ssd300(move_to(img.view(1, 3, 300, 300), device))
+            boxes = move_to(boxes_pred[0] + default, device)
+            test_loss += ssd_loss(test_tables[j], ex, boxes, classes_pred[0], 3)
+        test_loss /= len(test_data)
+        test_loss = test_loss.detach().cpu().numpy()
 
-torch.save(vgg.state_dict(), './models/vgg.pth')
-torch.save(al.state_dict(), './models/al.pth')
-torch.save(boxes_det.state_dict(), './models/boxes_det.pth')
-torch.save(classes_det.state_dict(), './models/classes_det.pth')
+        del boxes_pred, classes_pred
+        torch.cuda.empty_cache()
+
+    print(f'{i}: ')
+    print('Train:', train_loss / (len(train_data) // batch_size))
+    if test:
+        print('Test', test_loss)
